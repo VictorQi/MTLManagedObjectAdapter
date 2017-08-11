@@ -61,6 +61,9 @@ static SEL MTLSelectorWithKeyPattern(NSString *key, const char *suffix) {
 // A cached copy of the return value of +relationshipModelClassesByPropertyKey.
 @property (nonatomic, copy, readonly) NSDictionary *relationshipModelClassesByPropertyKey;
 
+// A cached copy of the return value of +fetchedPropertyModelClassesByPropertyKey.
+@property (nonatomic, copy, readonly) NSDictionary *fetchedPropertyModelClassesByPropertyKey;
+
 // A cache of the return value of -valueTransformersForModelClass:
 @property (nonatomic, copy, readonly) NSDictionary *valueTransformersByPropertyKey;
 
@@ -142,6 +145,10 @@ static SEL MTLSelectorWithKeyPattern(NSString *key, const char *suffix) {
 		_relationshipModelClassesByPropertyKey = [[modelClass relationshipModelClassesByPropertyKey] copy];
 	}
 
+	if ([modelClass respondsToSelector:@selector(fetchedPropertyModelClassesByPropertyKey)]) {
+		_fetchedPropertyModelClassesByPropertyKey = [[modelClass fetchedPropertyModelClassesByPropertyKey] copy];
+	}
+	
 	return self;
 }
 
@@ -198,6 +205,25 @@ static SEL MTLSelectorWithKeyPattern(NSString *key, const char *suffix) {
 			return setValueForKey(propertyKey, value);
 		};
 
+		BOOL (^deserializeFetchedProperty)(NSFetchedPropertyDescription *) = ^(NSFetchedPropertyDescription *fetchedPropertyDescription) {
+			Class nestedClass = self.fetchedPropertyModelClassesByPropertyKey[propertyKey];
+			if (nestedClass == nil) {
+				[NSException raise:NSInvalidArgumentException format:@"No class specified for decoding relationship at key \"%@\" in managed object %@", managedObjectKey, managedObject];
+			}
+			id models = performInContext(context, ^id{
+				NSArray *fetchedArray = [managedObject valueForKey:managedObjectKey];
+				NSMutableArray *models = [NSMutableArray arrayWithCapacity:[fetchedArray count]];
+				for (NSManagedObject *nestedObject in fetchedArray) {
+					id<MTLManagedObjectSerializing> model = [self.class modelOfClass:nestedClass fromManagedObject:nestedObject error:error];
+					[models addObject:model];
+				}
+				
+				return models;
+			});
+			
+			return setValueForKey(propertyKey, models);
+		};
+		
 		BOOL (^deserializeRelationship)(NSRelationshipDescription *) = ^(NSRelationshipDescription *relationshipDescription) {
 			Class nestedClass = self.relationshipModelClassesByPropertyKey[propertyKey];
 			if (nestedClass == nil) {
@@ -259,6 +285,8 @@ static SEL MTLSelectorWithKeyPattern(NSString *key, const char *suffix) {
 				return deserializeAttribute((id)propertyDescription);
 			} else if ([propertyClassName isEqual:@"NSRelationshipDescription"]) {
 				return deserializeRelationship((id)propertyDescription);
+			} else if ([propertyClassName isEqualToString:@"NSFetchedPropertyDescription"]) {
+				return deserializeFetchedProperty((id)propertyDescription);
 			} else {
 				if (error != NULL) {
 					NSString *failureReason = [NSString stringWithFormat:NSLocalizedString(@"Property descriptions of class %@ are unsupported.", @""), propertyClassName];
